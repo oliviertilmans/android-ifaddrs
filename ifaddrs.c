@@ -476,7 +476,7 @@ static void interpretAddr(struct nlmsghdr *p_hdr, struct ifaddrs **p_links, stru
         {
             l_mask[i] = 0xff;
         }
-        if(l_prefix < l_maxPrefix)
+        if(l_prefix % 8)
         {
             l_mask[i] = 0xff << (8 - (l_prefix % 8));
         }
