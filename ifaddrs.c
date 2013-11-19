@@ -125,6 +125,10 @@ static struct nlmsghdr *getNetlinkResponse(int p_socket, int *p_size, int *p_don
     {
         free(l_buffer);
         l_buffer = malloc(l_size);
+        if (l_buffer == NULL)
+        {
+            return NULL;
+        }
         
         int l_read = netlink_recv(p_socket, l_buffer, l_size);
         *p_size = l_read;
@@ -166,6 +170,11 @@ static struct nlmsghdr *getNetlinkResponse(int p_socket, int *p_size, int *p_don
 static NetlinkList *newListItem(struct nlmsghdr *p_data, unsigned int p_size)
 {
     NetlinkList *l_item = malloc(sizeof(NetlinkList));
+    if (l_item == NULL)
+    {
+        return NULL;
+    }
+
     l_item->m_next = NULL;
     l_item->m_data = p_data;
     l_item->m_size = p_size;
@@ -205,6 +214,11 @@ static NetlinkList *getResultList(int p_socket, int p_request)
         }
         
         NetlinkList *l_item = newListItem(l_hdr, l_size);
+        if (!l_item)
+        {
+            freeResultList(l_list);
+            return NULL;
+        }
         if(!l_list)
         {
             l_list = l_item;
@@ -276,7 +290,7 @@ static void addToEnd(struct ifaddrs **p_resultList, struct ifaddrs *p_entry)
     }
 }
 
-static void interpretLink(struct nlmsghdr *p_hdr, struct ifaddrs **p_links, struct ifaddrs **p_resultList)
+static int interpretLink(struct nlmsghdr *p_hdr, struct ifaddrs **p_links, struct ifaddrs **p_resultList)
 {
     struct ifinfomsg *l_info = (struct ifinfomsg *)NLMSG_DATA(p_hdr);
 
@@ -308,6 +322,10 @@ static void interpretLink(struct nlmsghdr *p_hdr, struct ifaddrs **p_links, stru
     }
     
     struct ifaddrs *l_entry = malloc(sizeof(struct ifaddrs) + l_nameSize + l_addrSize + l_dataSize);
+    if (l_entry == NULL)
+    {
+        return -1;
+    }
     memset(l_entry, 0, sizeof(struct ifaddrs));
     l_entry->ifa_name = "";
     
@@ -358,9 +376,10 @@ static void interpretLink(struct nlmsghdr *p_hdr, struct ifaddrs **p_links, stru
     
     addToEnd(p_resultList, l_entry);
     p_links[l_info->ifi_index - 1] = l_entry;
+    return 0;
 }
 
-static void interpretAddr(struct nlmsghdr *p_hdr, struct ifaddrs **p_links, struct ifaddrs **p_resultList)
+static int interpretAddr(struct nlmsghdr *p_hdr, struct ifaddrs **p_links, struct ifaddrs **p_resultList)
 {
     struct ifaddrmsg *l_info = (struct ifaddrmsg *)NLMSG_DATA(p_hdr);
 
@@ -401,6 +420,10 @@ static void interpretAddr(struct nlmsghdr *p_hdr, struct ifaddrs **p_links, stru
     }
     
     struct ifaddrs *l_entry = malloc(sizeof(struct ifaddrs) + l_nameSize + l_addrSize);
+    if (l_entry == NULL)
+    {
+        return -1;
+    }
     memset(l_entry, 0, sizeof(struct ifaddrs));
     l_entry->ifa_name = p_links[l_info->ifa_index - 1]->ifa_name;
     
@@ -486,9 +509,10 @@ static void interpretAddr(struct nlmsghdr *p_hdr, struct ifaddrs **p_links, stru
     }
     
     addToEnd(p_resultList, l_entry);
+    return 0;
 }
 
-static void interpret(int p_socket, NetlinkList *p_netlinkList, struct ifaddrs **p_links, struct ifaddrs **p_resultList)
+static int interpret(int p_socket, NetlinkList *p_netlinkList, struct ifaddrs **p_links, struct ifaddrs **p_resultList)
 {
     pid_t l_pid = getpid();
     for(; p_netlinkList; p_netlinkList = p_netlinkList->m_next)
@@ -509,14 +533,21 @@ static void interpret(int p_socket, NetlinkList *p_netlinkList, struct ifaddrs *
             
             if(l_hdr->nlmsg_type == RTM_NEWLINK)
             {
-                interpretLink(l_hdr, p_links, p_resultList);
+                if (interpretLink(l_hdr, p_links, p_resultList) == -1)
+                {
+                    return -1;
+                }
             }
             else if(l_hdr->nlmsg_type == RTM_NEWADDR)
             {
-                interpretAddr(l_hdr, p_links, p_resultList);
+                if (interpretAddr(l_hdr, p_links, p_resultList) == -1)
+                {
+                    return -1;
+                }
             }
         }
     }
+    return 0;
 }
 
 static unsigned countLinks(int p_socket, NetlinkList *p_netlinkList)
@@ -582,8 +613,14 @@ int getifaddrs(struct ifaddrs **ifap)
     struct ifaddrs *l_links[l_numLinks];
     memset(l_links, 0, l_numLinks * sizeof(struct ifaddrs *));
     
-    interpret(l_socket, l_linkResults, l_links, ifap);
-    interpret(l_socket, l_addrResults, l_links, ifap);
+    if (interpret(l_socket, l_linkResults, l_links, ifap) == -1)
+    {
+        return -1;
+    }
+    if (interpret(l_socket, l_addrResults, l_links, ifap) == -1)
+    {
+        return -1;
+    }
 
     freeResultList(l_linkResults);
     freeResultList(l_addrResults);
