@@ -406,10 +406,6 @@ static int interpretAddr(struct nlmsghdr *p_hdr, struct ifaddrs **p_resultList, 
 {
     struct ifaddrmsg *l_info = (struct ifaddrmsg *)NLMSG_DATA(p_hdr);
     struct ifaddrs *l_interface = findInterface(l_info->ifa_index, p_resultList, p_numLinks);
-    if(!l_interface)
-    { // no matching interface; skip this address
-        return 0;
-    }
 
     size_t l_nameSize = 0;
     size_t l_addrSize = 0;
@@ -453,12 +449,16 @@ static int interpretAddr(struct nlmsghdr *p_hdr, struct ifaddrs **p_resultList, 
         return -1;
     }
     memset(l_entry, 0, sizeof(struct ifaddrs));
-    l_entry->ifa_name = l_interface->ifa_name;
+    l_entry->ifa_name = (l_interface ? l_interface->ifa_name : "");
     
     char *l_name = ((char *)l_entry) + sizeof(struct ifaddrs);
     char *l_addr = l_name + l_nameSize;
     
-    l_entry->ifa_flags = l_info->ifa_flags | l_interface->ifa_flags;
+    l_entry->ifa_flags = l_info->ifa_flags;
+    if(l_interface)
+    {
+        l_entry->ifa_flags |= l_interface->ifa_flags;
+    }
     
     l_rtaSize = NLMSG_PAYLOAD(p_hdr, sizeof(struct ifaddrmsg));
     for(l_rta = IFLA_RTA(l_info); RTA_OK(l_rta, l_rtaSize); l_rta = RTA_NEXT(l_rta, l_rtaSize))
