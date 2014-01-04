@@ -290,7 +290,7 @@ static void addToEnd(struct ifaddrs **p_resultList, struct ifaddrs *p_entry)
     }
 }
 
-static int interpretLink(struct nlmsghdr *p_hdr, struct ifaddrs **p_links, struct ifaddrs **p_resultList)
+static int interpretLink(struct nlmsghdr *p_hdr, struct ifaddrs **p_resultList)
 {
     struct ifinfomsg *l_info = (struct ifinfomsg *)NLMSG_DATA(p_hdr);
 
@@ -300,7 +300,7 @@ static int interpretLink(struct nlmsghdr *p_hdr, struct ifaddrs **p_links, struc
     
     size_t l_rtaSize = NLMSG_PAYLOAD(p_hdr, sizeof(struct ifinfomsg));
     struct rtattr *l_rta;
-    for(l_rta = (struct rtattr *)(((char *)l_info) + NLMSG_ALIGN(sizeof(struct ifinfomsg))); RTA_OK(l_rta, l_rtaSize); l_rta = RTA_NEXT(l_rta, l_rtaSize))
+    for(l_rta = IFLA_RTA(l_info); RTA_OK(l_rta, l_rtaSize); l_rta = RTA_NEXT(l_rta, l_rtaSize))
     {
         void *l_rtaData = RTA_DATA(l_rta);
         size_t l_rtaDataSize = RTA_PAYLOAD(l_rta);
@@ -321,7 +321,7 @@ static int interpretLink(struct nlmsghdr *p_hdr, struct ifaddrs **p_links, struc
         }
     }
     
-    struct ifaddrs *l_entry = malloc(sizeof(struct ifaddrs) + l_nameSize + l_addrSize + l_dataSize);
+    struct ifaddrs *l_entry = malloc(sizeof(struct ifaddrs) + sizeof(int) + l_nameSize + l_addrSize + l_dataSize);
     if (l_entry == NULL)
     {
         return -1;
@@ -329,14 +329,18 @@ static int interpretLink(struct nlmsghdr *p_hdr, struct ifaddrs **p_links, struc
     memset(l_entry, 0, sizeof(struct ifaddrs));
     l_entry->ifa_name = "";
     
-    char *l_name = ((char *)l_entry) + sizeof(struct ifaddrs);
+    char *l_index = ((char *)l_entry) + sizeof(struct ifaddrs);
+    char *l_name = l_index + sizeof(int);
     char *l_addr = l_name + l_nameSize;
     char *l_data = l_addr + l_addrSize;
+    
+    // save the interface index so we can look it up when handling the addresses.
+    memcpy(l_index, &l_info->ifi_index, sizeof(int));
     
     l_entry->ifa_flags = l_info->ifi_flags;
     
     l_rtaSize = NLMSG_PAYLOAD(p_hdr, sizeof(struct ifinfomsg));
-    for(l_rta = (struct rtattr *)(((char *)l_info) + NLMSG_ALIGN(sizeof(struct ifinfomsg))); RTA_OK(l_rta, l_rtaSize); l_rta = RTA_NEXT(l_rta, l_rtaSize))
+    for(l_rta = IFLA_RTA(l_info); RTA_OK(l_rta, l_rtaSize); l_rta = RTA_NEXT(l_rta, l_rtaSize))
     {
         void *l_rtaData = RTA_DATA(l_rta);
         size_t l_rtaDataSize = RTA_PAYLOAD(l_rta);
@@ -375,13 +379,37 @@ static int interpretLink(struct nlmsghdr *p_hdr, struct ifaddrs **p_links, struc
     }
     
     addToEnd(p_resultList, l_entry);
-    p_links[l_info->ifi_index - 1] = l_entry;
     return 0;
 }
 
-static int interpretAddr(struct nlmsghdr *p_hdr, struct ifaddrs **p_links, struct ifaddrs **p_resultList)
+static struct ifaddrs *findInterface(int p_index, struct ifaddrs **p_links, int p_numLinks)
+{
+    int l_num = 0;
+    struct ifaddrs *l_cur = *p_links;
+    while(l_cur && l_num < p_numLinks)
+    {
+        char *l_indexPtr = ((char *)l_cur) + sizeof(struct ifaddrs);
+        int l_index;
+        memcpy(&l_index, l_indexPtr, sizeof(int));
+        if(l_index == p_index)
+        {
+            return l_cur;
+        }
+        
+        l_cur = l_cur->ifa_next;
+        ++l_num;
+    }
+    return NULL;
+}
+
+static int interpretAddr(struct nlmsghdr *p_hdr, struct ifaddrs **p_resultList, int p_numLinks)
 {
     struct ifaddrmsg *l_info = (struct ifaddrmsg *)NLMSG_DATA(p_hdr);
+    struct ifaddrs *l_interface = findInterface(l_info->ifa_index, p_resultList, p_numLinks);
+    if(!l_interface)
+    { // no matching interface; skip this address
+        return 0;
+    }
 
     size_t l_nameSize = 0;
     size_t l_addrSize = 0;
@@ -390,7 +418,7 @@ static int interpretAddr(struct nlmsghdr *p_hdr, struct ifaddrs **p_links, struc
     
     size_t l_rtaSize = NLMSG_PAYLOAD(p_hdr, sizeof(struct ifaddrmsg));
     struct rtattr *l_rta;
-    for(l_rta = (struct rtattr *)(((char *)l_info) + NLMSG_ALIGN(sizeof(struct ifaddrmsg))); RTA_OK(l_rta, l_rtaSize); l_rta = RTA_NEXT(l_rta, l_rtaSize))
+    for(l_rta = IFLA_RTA(l_info); RTA_OK(l_rta, l_rtaSize); l_rta = RTA_NEXT(l_rta, l_rtaSize))
     {
         void *l_rtaData = RTA_DATA(l_rta);
         size_t l_rtaDataSize = RTA_PAYLOAD(l_rta);
@@ -425,15 +453,15 @@ static int interpretAddr(struct nlmsghdr *p_hdr, struct ifaddrs **p_links, struc
         return -1;
     }
     memset(l_entry, 0, sizeof(struct ifaddrs));
-    l_entry->ifa_name = p_links[l_info->ifa_index - 1]->ifa_name;
+    l_entry->ifa_name = l_interface->ifa_name;
     
     char *l_name = ((char *)l_entry) + sizeof(struct ifaddrs);
     char *l_addr = l_name + l_nameSize;
     
-    l_entry->ifa_flags = l_info->ifa_flags | p_links[l_info->ifa_index - 1]->ifa_flags;
+    l_entry->ifa_flags = l_info->ifa_flags | l_interface->ifa_flags;
     
     l_rtaSize = NLMSG_PAYLOAD(p_hdr, sizeof(struct ifaddrmsg));
-    for(l_rta = (struct rtattr *)(((char *)l_info) + NLMSG_ALIGN(sizeof(struct ifaddrmsg))); RTA_OK(l_rta, l_rtaSize); l_rta = RTA_NEXT(l_rta, l_rtaSize))
+    for(l_rta = IFLA_RTA(l_info); RTA_OK(l_rta, l_rtaSize); l_rta = RTA_NEXT(l_rta, l_rtaSize))
     {
         void *l_rtaData = RTA_DATA(l_rta);
         size_t l_rtaDataSize = RTA_PAYLOAD(l_rta);
@@ -512,8 +540,9 @@ static int interpretAddr(struct nlmsghdr *p_hdr, struct ifaddrs **p_links, struc
     return 0;
 }
 
-static int interpret(int p_socket, NetlinkList *p_netlinkList, struct ifaddrs **p_links, struct ifaddrs **p_resultList)
+static int interpretLinks(int p_socket, NetlinkList *p_netlinkList, struct ifaddrs **p_resultList)
 {
+    int l_numLinks = 0;
     pid_t l_pid = getpid();
     for(; p_netlinkList; p_netlinkList = p_netlinkList->m_next)
     {
@@ -533,14 +562,39 @@ static int interpret(int p_socket, NetlinkList *p_netlinkList, struct ifaddrs **
             
             if(l_hdr->nlmsg_type == RTM_NEWLINK)
             {
-                if (interpretLink(l_hdr, p_links, p_resultList) == -1)
+                if(interpretLink(l_hdr, p_resultList) == -1)
                 {
                     return -1;
                 }
+                ++l_numLinks;
             }
-            else if(l_hdr->nlmsg_type == RTM_NEWADDR)
+        }
+    }
+    return l_numLinks;
+}
+
+static int interpretAddrs(int p_socket, NetlinkList *p_netlinkList, struct ifaddrs **p_resultList, int p_numLinks)
+{
+    pid_t l_pid = getpid();
+    for(; p_netlinkList; p_netlinkList = p_netlinkList->m_next)
+    {
+        unsigned int l_nlsize = p_netlinkList->m_size;
+        struct nlmsghdr *l_hdr;
+        for(l_hdr = p_netlinkList->m_data; NLMSG_OK(l_hdr, l_nlsize); l_hdr = NLMSG_NEXT(l_hdr, l_nlsize))
+        {
+            if((pid_t)l_hdr->nlmsg_pid != l_pid || (int)l_hdr->nlmsg_seq != p_socket)
             {
-                if (interpretAddr(l_hdr, p_links, p_resultList) == -1)
+                continue;
+            }
+            
+            if(l_hdr->nlmsg_type == NLMSG_DONE)
+            {
+                break;
+            }
+            
+            if(l_hdr->nlmsg_type == RTM_NEWADDR)
+            {
+                if (interpretAddr(l_hdr, p_resultList, p_numLinks) == -1)
                 {
                     return -1;
                 }
@@ -548,36 +602,6 @@ static int interpret(int p_socket, NetlinkList *p_netlinkList, struct ifaddrs **
         }
     }
     return 0;
-}
-
-static unsigned countLinks(int p_socket, NetlinkList *p_netlinkList)
-{
-    unsigned l_links = 0;
-    pid_t l_pid = getpid();
-    for(; p_netlinkList; p_netlinkList = p_netlinkList->m_next)
-    {
-        unsigned int l_nlsize = p_netlinkList->m_size;
-        struct nlmsghdr *l_hdr;
-        for(l_hdr = p_netlinkList->m_data; NLMSG_OK(l_hdr, l_nlsize); l_hdr = NLMSG_NEXT(l_hdr, l_nlsize))
-        {
-            if((pid_t)l_hdr->nlmsg_pid != l_pid || (int)l_hdr->nlmsg_seq != p_socket)
-            {
-                continue;
-            }
-            
-            if(l_hdr->nlmsg_type == NLMSG_DONE)
-            {
-                break;
-            }
-            
-            if(l_hdr->nlmsg_type == RTM_NEWLINK)
-            {
-                ++l_links;
-            }
-        }
-    }
-    
-    return l_links;
 }
 
 int getifaddrs(struct ifaddrs **ifap)
@@ -609,23 +633,17 @@ int getifaddrs(struct ifaddrs **ifap)
         return -1;
     }
     
-    unsigned l_numLinks = countLinks(l_socket, l_linkResults) + countLinks(l_socket, l_addrResults);
-    struct ifaddrs *l_links[l_numLinks];
-    memset(l_links, 0, l_numLinks * sizeof(struct ifaddrs *));
+    int l_result = 0;
+    int l_numLinks = interpretLinks(l_socket, l_linkResults, ifap);
+    if(l_numLinks == -1 || interpretAddrs(l_socket, l_addrResults, ifap, l_numLinks) == -1)
+    {
+        l_result = -1;
+    }
     
-    if (interpret(l_socket, l_linkResults, l_links, ifap) == -1)
-    {
-        return -1;
-    }
-    if (interpret(l_socket, l_addrResults, l_links, ifap) == -1)
-    {
-        return -1;
-    }
-
     freeResultList(l_linkResults);
     freeResultList(l_addrResults);
     close(l_socket);
-    return 0;
+    return l_result;
 }
 
 void freeifaddrs(struct ifaddrs *ifa)
