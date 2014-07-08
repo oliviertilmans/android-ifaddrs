@@ -26,9 +26,11 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <string.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <errno.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <netpacket/packet.h>
 #include <net/if_arp.h>
 #include <netinet/in.h>
 #include <linux/netlink.h>
@@ -63,22 +65,25 @@ static int netlink_socket(void)
 
 static int netlink_send(int p_socket, int p_request)
 {
-    char l_buffer[NLMSG_ALIGN(sizeof(struct nlmsghdr)) + NLMSG_ALIGN(sizeof(struct rtgenmsg))];
-    memset(l_buffer, 0, sizeof(l_buffer));
-    struct nlmsghdr *l_hdr = (struct nlmsghdr *)l_buffer;
-    struct rtgenmsg *l_msg = (struct rtgenmsg *)NLMSG_DATA(l_hdr);
+    struct
+    {
+        struct nlmsghdr m_hdr;
+        struct rtgenmsg m_msg;
+    } l_data;
+
+    memset(&l_data, 0, sizeof(l_data));
     
-    l_hdr->nlmsg_len = NLMSG_LENGTH(sizeof(*l_msg));
-    l_hdr->nlmsg_type = p_request;
-    l_hdr->nlmsg_flags = NLM_F_ROOT | NLM_F_MATCH | NLM_F_REQUEST;
-    l_hdr->nlmsg_pid = 0;
-    l_hdr->nlmsg_seq = p_socket;
-    l_msg->rtgen_family = AF_UNSPEC;
+    l_data.m_hdr.nlmsg_len = NLMSG_LENGTH(sizeof(struct rtgenmsg));
+    l_data.m_hdr.nlmsg_type = p_request;
+    l_data.m_hdr.nlmsg_flags = NLM_F_ROOT | NLM_F_MATCH | NLM_F_REQUEST;
+    l_data.m_hdr.nlmsg_pid = 0;
+    l_data.m_hdr.nlmsg_seq = p_socket;
+    l_data.m_msg.rtgen_family = AF_UNSPEC;
     
     struct sockaddr_nl l_addr;
     memset(&l_addr, 0, sizeof(l_addr));
     l_addr.nl_family = AF_NETLINK;
-    return (sendto(p_socket, l_hdr, l_hdr->nlmsg_len, 0, (struct sockaddr *)&l_addr, sizeof(l_addr)));
+    return (sendto(p_socket, &l_data.m_hdr, l_data.m_hdr.nlmsg_len, 0, (struct sockaddr *)&l_addr, sizeof(l_addr)));
 }
 
 static int netlink_recv(int p_socket, void *p_buffer, size_t p_len)
@@ -86,7 +91,6 @@ static int netlink_recv(int p_socket, void *p_buffer, size_t p_len)
     struct msghdr l_msg;
     struct iovec l_iov = { p_buffer, p_len };
     struct sockaddr_nl l_addr;
-    int l_result;
 
     for(;;)
     {
@@ -406,6 +410,11 @@ static int interpretAddr(struct nlmsghdr *p_hdr, struct ifaddrs **p_resultList, 
 {
     struct ifaddrmsg *l_info = (struct ifaddrmsg *)NLMSG_DATA(p_hdr);
     struct ifaddrs *l_interface = findInterface(l_info->ifa_index, p_resultList, p_numLinks);
+    
+    if(l_info->ifa_family == AF_PACKET)
+    {
+        return 0;
+    }
 
     size_t l_nameSize = 0;
     size_t l_addrSize = 0;
@@ -418,10 +427,6 @@ static int interpretAddr(struct nlmsghdr *p_hdr, struct ifaddrs **p_resultList, 
     {
         void *l_rtaData = RTA_DATA(l_rta);
         size_t l_rtaDataSize = RTA_PAYLOAD(l_rta);
-        if(l_info->ifa_family == AF_PACKET)
-        {
-            continue;
-        }
         
         switch(l_rta->rta_type)
         {
